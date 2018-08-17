@@ -1,0 +1,275 @@
+Plan is to split this into 11x 12-disk raid6s, with a raid0 joining them. That uses 132 drives, and plan is to hold back 8 disks for global hot spares.
+
+This is commonly known as RAID 60, and you can find controller cards that will support RAID 60 across a certain number of drives.
+
+I initially did my first implementation of this layout with mdadm, and linux software raid, with BTRFS filesystem on top of the linux multi-disk.
+
+For lots of reasons, I don't recommend that.
+
+1) I now think it's smarter to have the filesystem to have direct intimate awareness of the raid layer, and I think ZFS handles that better than btrfs.
+2) mdadm out of the box on Red Hat Linux comes with cron jobs that have the effect of rebuilding the raid. This will undoubtedly happen to you at an inconvenient time. You can disable this raid rebuilding and once I figured out how it was happening, I did. Even then, this configuration didn't feel very solid to me.
+3) btrfs is basically an open source rewrite of ZFS. I am not a licensing zealot, and I'm happy to just use the ZFS code. There are some arguments about why btrfs is better. I'll not list them here
+4) I tried btrfs + mdadm vs. ZFS, with ZFS managing the RAID 60 directly, side-by-side, on identical hardware, and I liked the ZFS so much better that I ripped out the btrfs and reinstalled with ZFS. Learn from my mistakes.
+
+Back to actually building stuff...
+
+on the last document, we reformatted our drives from 520 byte to 512 byte, and after reboot, they should actually show up in linux in ways that are useful.
+
+This also means multipath can now help you.
+
+actually listing the properly registered multipath devices
+
+[root@backupberg1 ~]# multipath -ll | head
+mpathcu (35000c500558ca71f) dm-107 SEAGATE ,DKS2D-H3R0SS
+size=2.7T features='0' hwhandler='0' wp=rw
+|-+- policy='service-time 0' prio=1 status=active
+| `- 1:0:168:0 sdfg 130:32  active ready running
+|-+- policy='service-time 0' prio=1 status=enabled
+| `- 8:0:75:0  sdjo 65:288  active ready running
+`-+- policy='service-time 0' prio=1 status=enabled
+  `- 9:0:107:0 sdqa 131:416 active ready running
+
+In that particular snippet, /dev/mpath/mpathcu
+is a nice name for a drive that otherwise would have shown up with three other device names.
+
+[root@backupberg1 ~]# multipath -ll | grep mpath | wc -l
+140
+[root@backupberg1 ~]# multipath -ll | grep mpath | head
+mpathcu (35000c500558ca71f) dm-107 SEAGATE ,DKS2D-H3R0SS
+mpathdz (35000c500564f28c3) dm-85 SEAGATE ,DKS2D-H3R0SS
+mpathbp (35000c50055b98ddf) dm-67 SEAGATE ,DKS2D-H3R0SS
+mpathak (35000c500558d24db) dm-49 SEAGATE ,DKS2D-H3R0SS
+mpathr (35000c50055b98293) dm-8 SEAGATE ,DKS2D-H3R0SS
+mpathch (35000c500558d10cb) dm-139 SEAGATE ,DKS2D-H3R0SS
+mpathdm (35000c50055992b33) dm-81 SEAGATE ,DKS2D-H3R0SS
+mpathbc (35000c50055b9911f) dm-41 SEAGATE ,DKS2D-H3R0SS
+mpathe (35000c50055992b9b) dm-17 SEAGATE ,DKS2D-H3R0SS
+mpathee (35000c5005590b597) dm-98 SEAGATE ,DKS2D-H3R0SS
+
+getting a list of mpath paths
+on backupberg1, we have 140x 2.7TB (3TB) drives.
+
+
+[root@backupberg1 ~]# multipath -ll | grep mpath | wc -l
+140
+[root@backupberg1 ~]# multipath -ll | grep 2.7T | wc -l
+140
+[root@backupberg1 ~]# multipath -ll | grep mpath | cut -d' ' -f1 > just_mpath_paths
+[root@backupberg1 making_raid6s]# cat ~/just_mpath_paths | while read dev ; do echo /dev/mapper/$dev >> better_mpath_paths; done
+[root@backupberg1 making_raid6s]# wc -l better_mpath_paths
+140 better_mpath_paths
+[root@backupberg1 making_raid6s]# head -5 better_mpath_paths
+/dev/mapper/mpathcu
+/dev/mapper/mpathdz
+/dev/mapper/mpathbp
+/dev/mapper/mpathak
+/dev/mapper/mpathr
+
+Plan is to split this into 11x 12-disk raid6s, with a raid0 joining them. That uses 132 drives, and plan is to hold back 8 disks for global hot spares.
+
+getting ZFS into Red Hat
+http://zfsonlinux.org/
+
+
+[root@backupberg2 src]# cat /etc/yum.repos.d/zfs.repo
+ [zfs]
+name = ZFS on Linux for EL 7 - dkms
+baseurl = http://download.zfsonlinux.org/epel/7/$basearch/
+enabled = 1
+metadata_expire = 7d
+gpgcheck = 1
+gpgkey = file:///etc/pki/rpm-gpg/RPM-GPG-KEY-zfsonlinux
+
+[zfs-kmod]
+name = ZFS on Linux for EL 7 - kmod
+baseurl = http://download.zfsonlinux.org/epel/7/kmod/$basearch/
+enabled = 1
+metadata_expire = 7d
+gpgcheck = 1
+gpgkey = file:///etc/pki/rpm-gpg/RPM-GPG-KEY-zfsonlinux
+[root@backupberg2 src]# wget "http://pgp.mit.edu/pks/lookup?op=get&search=0xA9D5A1C0F14AB620" -O /etc/pki/rpm-gpg/RPM-GPG-KEY-zfsonlinux
+[root@backupberg2 src]# yum install zfs
+Dependencies Resolved
+
+================================================================================
+ Package          Arch         Version                     Repository      Size
+================================================================================
+Installing:
+ zfs              x86_64       0.6.5.9-1.el7.centos        zfs            336 k
+Installing for dependencies:
+ kmod-spl         x86_64       0.6.5.9-1.el7.centos        zfs-kmod       110 k
+ kmod-zfs         x86_64       0.6.5.9-1.el7.centos        zfs-kmod       662 k
+ libnvpair1       x86_64       0.6.5.9-1.el7.centos        zfs             38 k
+ libuutil1        x86_64       0.6.5.9-1.el7.centos        zfs             43 k
+ libzfs2          x86_64       0.6.5.9-1.el7.centos        zfs            125 k
+ libzpool2        x86_64       0.6.5.9-1.el7.centos        zfs            425 k
+ spl              x86_64       0.6.5.9-1.el7.centos        zfs             29 k
+
+setting ZFS services to run continuously
+
+[root@backupberg2 ~]# systemctl preset zfs-import-cache zfs-import-scan zfs-mount zfs-share zfs-zed zfs.target
+[root@backupberg2 ~]# systemctl enable zfs-import-cache zfs-import-scan zfs-mount zfs-share zfs-zed zfs.target
+[root@backupberg2 ~]# systemctl start zfs-import-cache zfs-import-scan zfs-mount zfs-share zfs-zed zfs.target
+
+getting commands ready to build raids
+Luckily we can adapt the work we did on btrfs
+
+
+[root@backupberg2 ~]# for (( dev=0 ; dev < 1 ; dev++ )) ; do echo -n "zpool create pool60$dev raidz2 "; for ((i=1; $i <= 12 ; i=$i+1 )) ; do incr=$(($(($dev*12))+$i)) ; echo -n `head -n $incr sorted_better_mpath_paths | tail -1 `; echo -n " " ; done ; echo ; done
+zpool create pool600 raidz2 /dev/mapper/mpatha /dev/mapper/mpathaa /dev/mapper/mpathab /dev/mapper/mpathac /dev/mapper/mpathad /dev/mapper/mpathae /dev/mapper/mpathaf /dev/mapper/mpathag /dev/mapper/mpathah /dev/mapper/mpathai /dev/mapper/mpathaj /dev/mapper/mpathak
+[root@backupberg2 ~]# for (( dev=1 ; dev < 11 ; dev++ )) ; do echo -n "zpool add pool60 raidz2 "; for ((i=1; $i <= 12 ; i=$i+1 )) ; do incr=$(($(($dev*12))+$i)) ; echo -n `head -n $incr sorted_better_mpath_paths | tail -1 `; echo -n " " ; done ; echo ; done
+zpool add pool60 raidz2 /dev/mapper/mpathal /dev/mapper/mpatham /dev/mapper/mpathan /dev/mapper/mpathao /dev/mapper/mpathap /dev/mapper/mpathaq /dev/mapper/mpathar /dev/mapper/mpathas /dev/mapper/mpathat /dev/mapper/mpathau /dev/mapper/mpathav /dev/mapper/mpathaw
+zpool add pool60 raidz2 /dev/mapper/mpathax /dev/mapper/mpathay /dev/mapper/mpathaz /dev/mapper/mpathb /dev/mapper/mpathba /dev/mapper/mpathbb /dev/mapper/mpathbc /dev/mapper/mpathbd /dev/mapper/mpathbe /dev/mapper/mpathbf /dev/mapper/mpathbg /dev/mapper/mpathbh
+zpool add pool60 raidz2 /dev/mapper/mpathbi /dev/mapper/mpathbj /dev/mapper/mpathbk /dev/mapper/mpathbl /dev/mapper/mpathbm /dev/mapper/mpathbn /dev/mapper/mpathbo /dev/mapper/mpathbp /dev/mapper/mpathbq /dev/mapper/mpathbr /dev/mapper/mpathbs /dev/mapper/mpathbt
+zpool add pool60 raidz2 /dev/mapper/mpathbu /dev/mapper/mpathbv /dev/mapper/mpathbw /dev/mapper/mpathbx /dev/mapper/mpathby /dev/mapper/mpathbz /dev/mapper/mpathc /dev/mapper/mpathca /dev/mapper/mpathcb /dev/mapper/mpathcc /dev/mapper/mpathcd /dev/mapper/mpathce
+zpool add pool60 raidz2 /dev/mapper/mpathcf /dev/mapper/mpathcg /dev/mapper/mpathch /dev/mapper/mpathci /dev/mapper/mpathcj /dev/mapper/mpathck /dev/mapper/mpathcl /dev/mapper/mpathcm /dev/mapper/mpathcn /dev/mapper/mpathco /dev/mapper/mpathcp /dev/mapper/mpathcq
+zpool add pool60 raidz2 /dev/mapper/mpathcr /dev/mapper/mpathcs /dev/mapper/mpathct /dev/mapper/mpathcu /dev/mapper/mpathcv /dev/mapper/mpathcw /dev/mapper/mpathcx /dev/mapper/mpathcy /dev/mapper/mpathcz /dev/mapper/mpathd /dev/mapper/mpathda /dev/mapper/mpathdb
+zpool add pool60 raidz2 /dev/mapper/mpathdc /dev/mapper/mpathdd /dev/mapper/mpathde /dev/mapper/mpathdf /dev/mapper/mpathdg /dev/mapper/mpathdh /dev/mapper/mpathdi /dev/mapper/mpathdj /dev/mapper/mpathdk /dev/mapper/mpathdl /dev/mapper/mpathdm /dev/mapper/mpathdn
+zpool add pool60 raidz2 /dev/mapper/mpathdo /dev/mapper/mpathdp /dev/mapper/mpathdq /dev/mapper/mpathdr /dev/mapper/mpathds /dev/mapper/mpathdt /dev/mapper/mpathdu /dev/mapper/mpathdv /dev/mapper/mpathdw /dev/mapper/mpathdx /dev/mapper/mpathdy /dev/mapper/mpathdz
+zpool add pool60 raidz2 /dev/mapper/mpathe /dev/mapper/mpathea /dev/mapper/mpatheb /dev/mapper/mpathec /dev/mapper/mpathed /dev/mapper/mpathee /dev/mapper/mpathef /dev/mapper/mpatheg /dev/mapper/mpatheh /dev/mapper/mpathei /dev/mapper/mpathej /dev/mapper/mpathf
+zpool add pool60 raidz2 /dev/mapper/mpathg /dev/mapper/mpathh /dev/mapper/mpathi /dev/mapper/mpathj /dev/mapper/mpathk /dev/mapper/mpathl /dev/mapper/mpathm /dev/mapper/mpathn /dev/mapper/mpatho /dev/mapper/mpathp /dev/mapper/mpathq /dev/mapper/mpathr
+
+actually running the ZFS pool creates
+What I learned was that the way to make RAID 60 with ZFS is to:
+
+first come up with a name for your RAID 60.
+
+Use that name for the first batch of RAID6 drives you want to add, and use the zpool create command.
+
+Then run the zpool add command to add subsequent RAID 6s, creating a RAID60 that gets increasingly larger in RAID6 increments.
+
+So we ran:
+
+
+[root@backupberg2 ~]# zpool create pool60 raidz2 /dev/mapper/mpatha /dev/mapper/mpathaa /dev/mapper/mpathab /dev/mapper/mpathac /dev/mapper/mpathad /dev/mapper/mpathae /dev/mapper/mpathaf /dev/mapper/mpathag /dev/mapper/mpathah /dev/mapper/mpathai /dev/mapper/mpathaj /dev/mapper/mpathak
+[root@backupberg2 ~]# zpool list
+NAME     SIZE  ALLOC   FREE  EXPANDSZ   FRAG    CAP  DEDUP  HEALTH  ALTROOT
+pool60  32.5T   116K  32.5T         -     0%     0%  1.00x  ONLINE  -
+[root@backupberg2 ~]# zpool list -v
+NAME   SIZE  ALLOC   FREE  EXPANDSZ   FRAG    CAP  DEDUP  HEALTH  ALTROOT
+pool60  32.5T   116K  32.5T         -     0%     0%  1.00x  ONLINE  -
+  raidz2  32.5T   116K  32.5T         -     0%     0%
+    mpatha      -      -      -         -      -      -
+    mpathaa      -      -      -         -      -      -
+    mpathab      -      -      -         -      -      -
+    mpathac      -      -      -         -      -      -
+    mpathad      -      -      -         -      -      -
+    mpathae      -      -      -         -      -      -
+    mpathaf      -      -      -         -      -      -
+    mpathag      -      -      -         -      -      -
+    mpathah      -      -      -         -      -      -
+    mpathai      -      -      -         -      -      -
+    mpathaj      -      -      -         -      -      -
+    mpathak      -      -      -         -      -      -
+[root@backupberg2 ~]# zpool add pool60 raidz2 /dev/mapper/mpathal /dev/mapper/mpatham /dev/mapper/mpathan /dev/mapper/mpathao /dev/mapper/mpathap /dev/mapper/mpathaq /dev/mapper/mpathar /dev/mapper/mpathas /dev/mapper/mpathat /dev/mapper/mpathau /dev/mapper/mpathav /dev/mapper/mpathaw
+[root@backupberg2 ~]# zpool list
+NAME     SIZE  ALLOC   FREE  EXPANDSZ   FRAG    CAP  DEDUP  HEALTH  ALTROOT
+pool60    65T   256K  65.0T         -     0%     0%  1.00x  ONLINE  -
+[root@backupberg2 ~]# zpool list -v
+NAME   SIZE  ALLOC   FREE  EXPANDSZ   FRAG    CAP  DEDUP  HEALTH  ALTROOT
+pool60    65T   284K  65.0T         -     0%     0%  1.00x  ONLINE  -
+  raidz2  32.5T   262K  32.5T         -     0%     0%
+    mpatha      -      -      -         -      -      -
+    mpathaa      -      -      -         -      -      -
+    mpathab      -      -      -         -      -      -
+    mpathac      -      -      -         -      -      -
+    mpathad      -      -      -         -      -      -
+    mpathae      -      -      -         -      -      -
+    mpathaf      -      -      -         -      -      -
+    mpathag      -      -      -         -      -      -
+    mpathah      -      -      -         -      -      -
+    mpathai      -      -      -         -      -      -
+    mpathaj      -      -      -         -      -      -
+    mpathak      -      -      -         -      -      -
+  raidz2  32.5T    21K  32.5T         -     0%     0%
+    mpathal      -      -      -         -      -      -
+    mpatham      -      -      -         -      -      -
+    mpathan      -      -      -         -      -      -
+    mpathao      -      -      -         -      -      -
+    mpathap      -      -      -         -      -      -
+    mpathaq      -      -      -         -      -      -
+    mpathar      -      -      -         -      -      -
+    mpathas      -      -      -         -      -      -
+    mpathat      -      -      -         -      -      -
+    mpathau      -      -      -         -      -      -
+    mpathav      -      -      -         -      -      -
+    mpathaw      -      -      -         -      -      -
+
+and then you just run the remainder of the ZFS commands we created above.
+
+verify the creation of the pools
+
+[root@backupberg2 ~]# zpool list
+NAME     SIZE  ALLOC   FREE  EXPANDSZ   FRAG    CAP  DEDUP  HEALTH  ALTROOT
+pool60   358T   288K   357T         -     0%     0%  1.00x  ONLINE  -
+[root@backupberg2 ~]# zpool list -v | head -5
+NAME   SIZE  ALLOC   FREE  EXPANDSZ   FRAG    CAP  DEDUP  HEALTH  ALTROOT
+pool60   358T   288K   357T         -     0%     0%  1.00x  ONLINE  -
+  raidz2  32.5T    87K  32.5T         -     0%     0%
+    mpatha      -      -      -         -      -      -
+    mpathaa      -      -      -         -      -      -
+[root@backupberg2 ~]# zpool list -v | grep raidz
+  raidz2  32.5T    87K  32.5T         -     0%     0%
+  raidz2  32.5T    69K  32.5T         -     0%     0%
+  raidz2  32.5T    15K  32.5T         -     0%     0%
+  raidz2  32.5T      0  32.5T         -     0%     0%
+  raidz2  32.5T      0  32.5T         -     0%     0%
+  raidz2  32.5T  64.5K  32.5T         -     0%     0%
+  raidz2  32.5T  52.5K  32.5T         -     0%     0%
+  raidz2  32.5T      0  32.5T         -     0%     0%
+  raidz2  32.5T      0  32.5T         -     0%     0%
+  raidz2  32.5T      0  32.5T         -     0%     0%
+  raidz2  32.5T      0  32.5T         -     0%     0%
+
+create the ZFS filesystem
+
+[root@backupberg2 ~]# zfs create pool60/backups
+[root@backupberg2 ~]# zfs list
+NAME             USED  AVAIL  REFER  MOUNTPOINT
+pool60           229K   287T  38.5K  /pool60
+pool60/backups  37.3K   287T  37.3K  /pool60/backups
+
+first time mount of the ZFS filesystem
+
+[root@backupberg2 ~]# zfs set mountpoint=/backups pool60/backups
+[root@backupberg2 ~]# df -h /backups
+Filesystem      Size  Used Avail Use% Mounted on
+pool60/backups  287T     0  287T   0% /backups
+
+enabling compression on ZFS
+
+[root@backupberg2 ~]# zfs get compression pool60/backups
+NAME            PROPERTY     VALUE     SOURCE
+pool60/backups  compression  off       default
+[root@backupberg2 ~]# zfs set compression=gzip pool60/backups
+[root@backupberg2 ~]# zfs get compression pool60/backups
+NAME            PROPERTY     VALUE     SOURCE
+pool60/backups  compression  gzip      local
+ still need to actually mount it as a compressed filesystem.
+
+actually, it doesn't seem like we have to do anything to enable compression at mount time. It seems like toggling it on is a durable operation.
+
+
+[root@backupberg2 ~]# zfs get compressratio pool60/backups
+NAME            PROPERTY       VALUE  SOURCE
+pool60/backups  compressratio  1.00x  -
+
+But it's clear that my initial copy in was done without compression enabled.
+
+repacking the data from the initial copy of nexsan
+
+[root@backupberg2 ~]# zfs create pool60/nexsan
+[root@backupberg2 ~]# zfs list
+NAME               USED  AVAIL  REFER  MOUNTPOINT
+pool60             166T   120T  39.8K  /pool60
+pool60/backups     166T   120T   166T  /backups
+pool60/nexsan     37.3K   120T  37.3K  /pool60/nexsan
+[root@backupberg2 ~]# zfs get compression pool60/nexsan
+NAME           PROPERTY     VALUE     SOURCE
+pool60/nexsan  compression  off       default
+[root@backupberg2 ~]# zfs set compression=gzip pool60/nexsan
+[root@backupberg2 ~]# zfs get compression pool60/nexsan
+NAME           PROPERTY     VALUE     SOURCE
+pool60/nexsan  compression  gzip      local
+[root@backupberg2 ~]# zfs set mountpoint=/zfs_nexsan pool60/nexsan
+[root@backupberg2 ~]# zfs mount pool60/nexsan

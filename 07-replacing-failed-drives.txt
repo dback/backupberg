@@ -1,0 +1,174 @@
+When things go wrong, ZFS tends to spot damage.
+
+[root@backupberg2 ~]# zpool status | head -15
+pool: pool60
+state: DEGRADED
+status: One or more devices are faulted in response to persistent errors.
+
+Sufficient replicas exist for the pool to continue functioning in a degraded state.
+action: Replace the faulted device, or use 'zpool clear' to mark the device repaired.
+scan: scrub in progress since Mon Aug 13 12:06:22 2018
+
+In this particular case, I was doing a ZFS scrub when the system detected read errors on disk.
+
+In this particular case, two disks failed in the same time interval, but there were on different raidz2 volumes (RAID 60) and as such there was still sufficient parity data in the RAID to continue business as usual.
+
+raidz2-2 DEGRADED 0 0 0
+mpathb FAULTED 37 0 0 too many errors (repairing)
+
+raidz2-3 DEGRADED 0 0 0
+mpathbr FAULTED 12 0 0 too many errors (repairing)
+
+I would like to isolate these mpath devices to physical serial numbers, so I know which physical disks to remove (and also to run further inquiries on the health of those disks).
+
+[root@backupberg2 ~]# sg_inq /dev/mapper/mpathb | grep serial
+Unit serial number: Z294886X0000C2518LAC
+
+there's a serial. Easy peasy.
+
+In my case, my physical disk trays are labeled with serial numbers, which makes it not so bad to just shelf-read the disk trays until I find the serial number in question. It woudl be nice if I could light up the tray with an LED, but I'm not aware of a way to do that. Please write to me if you know how.
+
+Basically, if ZFS sees damage, it's likely that SMART sees damage too, and also likely the kernel has seen some errors as well...
+
+[root@backupberg2 ~]# dmesg | tail -5
+[6053327.580042] sd 1:0:80:0: [sdcf] Sense Key : Medium Error [current] [descriptor]
+[6053327.580046] sd 1:0:80:0: [sdcf] Add. Sense: Unrecovered read error
+[6053327.580051] sd 1:0:80:0: [sdcf] CDB: Read(16) 88 00 00 00 00 00 d4 98 9e a4 00 00 00 10 00 00
+[6053327.580054] blk_update_request: critical medium error, dev sdcf, sector 3566771877
+[6053327.580182] blk_update_request: critical medium error, dev dm-3, sector 3566771876
+
+[root@backupberg2 ~]# multipath -ll | grep mpathbr -A 8
+mpathbr (35000c5004275a127) dm-3 SEAGATE ,DKS2D-H3R0SS
+size=2.7T features='0' hwhandler='0' wp=rw
+|-+- policy='service-time 0' prio=1 status=active
+| `- 1:0:80:0  sdcf 69:48   active ready running
+|-+- policy='service-time 0' prio=1 status=enabled
+| `- 8:0:80:0  sdhq 134:0   active ready running
+|-+- policy='service-time 0' prio=1 status=enabled
+| `- 8:0:202:0 sdlz 69:272  active ready running
+`-+- policy='service-time 0' prio=1 status=enabled
+
+note that mpathcf is one of the device paths associated with mpathbr, which we already suspected was bad because ZFS said so.
+
+Let's ask smart what it thinks...
+
+[root@backupberg2 ~]# smartctl -a /dev/mpathcf
+smartctl 6.2 2017-02-27 r4394 [x86_64-linux-3.10.0-693.21.1.el7.x86_64] (local build)
+Copyright (C) 2002-13, Bruce Allen, Christian Franke, www.smartmontools.org
+
+/dev/mpathcf: Unable to detect device type
+Please specify device type with the -d option.
+
+Use smartctl -h to get a usage summary
+
+[root@backupberg2 ~]# smartctl -a /dev/sdcf
+smartctl 6.2 2017-02-27 r4394 [x86_64-linux-3.10.0-693.21.1.el7.x86_64] (local build)
+Copyright (C) 2002-13, Bruce Allen, Christian Franke, www.smartmontools.org
+
+=== START OF INFORMATION SECTION ===
+Vendor:               SEAGATE
+Product:              DKS2D-H3R0SS
+Revision:             6FB0
+User Capacity:        3,000,592,982,016 bytes [3.00 TB]
+Logical block size:   512 bytes
+Rotation Rate:        7200 rpm
+Form Factor:          3.5 inches
+Logical Unit id:      0x5000c5004275a127
+Serial number:        Z294MV2R000093045Q2B
+Device type:          disk
+Transport protocol:   SAS
+Local Time is:        Fri Aug 17 11:03:02 2018 EDT
+SMART support is:     Available - device has SMART capability.
+SMART support is:     Enabled
+Temperature Warning:  Enabled
+
+=== START OF READ SMART DATA SECTION ===
+SMART Health Status: OK
+
+Current Drive Temperature:     35 C
+Drive Trip Temperature:        68 C
+
+Manufactured in week 37 of year 2012
+Specified cycle count over device lifetime:  10000
+Accumulated start-stop cycles:  615
+Specified load-unload count over device lifetime:  300000
+Accumulated load-unload cycles:  615
+Elements in grown defect list: 0
+
+Vendor (Seagate) cache information
+  Blocks sent to initiator = 795433168
+  Blocks received from initiator = 3647507182
+  Blocks read from cache and sent to initiator = 373277603
+  Number of read and write commands whose size <= segment size = 51884270
+  Number of read and write commands whose size > segment size = 0
+
+Vendor (Seagate/Hitachi) factory information
+  number of hours powered up = 43080.28
+  number of minutes until next internal SMART test = 4
+
+Error counter log:
+           Errors Corrected by           Total   Correction     Gigabytes    Total
+               ECC          rereads/    errors   algorithm      processed    uncorrected
+           fast | delayed   rewrites  corrected  invocations   [10^9 bytes]  errors
+read:   1630726418        1         0  1630726419         11       6324.096          10
+write:         0        0         0         0          0       4198.390           0
+verify: 4136044273        0         0  4136044273          0       5216.574           0
+
+Non-medium error count:       22
+
+
+[GLTSD (Global Logging Target Save Disable) set. Enable Save with '-S on']
+No self-tests have been logged
+
+as you can see, the error log is seeing large numbers of corrected errors. That's a good enough reason to conclude that this disk is all done.
+
+Let's tell ZFS to replace the drive with an unused drive...
+
+[root@backupberg2 ~]# zpool replace pool60 /dev/mapper/mpathbr /dev/mapper/mpatht
+
+this begins the raid volume rebuild, copying parity data to mpatht. ZFS calls the mirror rebuild process 'resilvering', and you can monitor it while it's working...
+
+[root@backupberg2 ~]# zpool status | head -15
+pool: pool60
+state: DEGRADED
+status: One or more devices is currently being resilvered. The pool will
+
+continue to function, possibly in a degraded state.
+action: Wait for the resilver to complete.
+scan: resilver in progress since Tue Aug 14 16:27:32 2018
+
+729G resilvered, 45.69% done
+
+That will keep running, sometimes with a useful estimate, sometimes not.
+
+When it's all done, you'll see a more useful line like:
+
+[root@backupberg2 ~]# zpool status | head -13
+  pool: pool60
+ state: ONLINE
+  scan: resilvered 1.55T in 51h17m with 0 errors on Thu Aug 16 19:45:21 2018
+config:
+
+	NAME         STATE     READ WRITE CKSUM
+	pool60       ONLINE       0     0     0
+
+Once the raid rebuild has completed, it's time to go physically yank that failed disk (make sure you match the serial) and then put the new disk in.
+
+With a new disk added,
+you may need to reformat the disk from 520 byte to 512 byte. Refer back to my previous document about sg_format command.
+
+If you're adding this drive to a live system, and you should, you should see a message get printed to the console. There will probably be a new physical drive detected, and mpath will probably assign a new mpath name as well.
+
+A good best practice is to assign that newly-added drive as a hot spare.
+
+set new drive as hot spare
+
+[root@backupberg2 ~]# zpool add pool60 spare /dev/mapper/mpathu
+
+verify that the disk was successfully added:
+
+[root@backupberg2 ~]# zpool status | tail -4
+	spares
+	  mpathu         AVAIL
+
+errors: No known data errors

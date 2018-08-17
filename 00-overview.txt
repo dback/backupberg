@@ -1,0 +1,12 @@
+David Backeberg
+20180817
+
+Very quick version of how Backupberg works, starting from bare metal and ending up with a working backup solution.
+
+1) hook up disk trays to linux
+2) isolate an authoritative device name for each drive with multipath
+3) design and build a raid / filesystem that meets your needs
+4) design and configure a snapshot / archiving scheme that meets your needs
+5) actually start bringing in data
+6) monitoring drives for failure
+7) replacing drives when failure happens

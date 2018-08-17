@@ -1,0 +1,36 @@
+This part is very environment specific, and should be customized to your usage.
+
+In my situation, I am backing up five main filesystems, across nine backed-up hosts, with three seperate backupbergs hosting the snapshots and files.
+
+Here are main things you need to ask yourself:
+
+* what is actually important to restore in the event of a doomsday rm -Rf event?
+* what is a reasonable retention policy? In my personal opinion you want to use as much of your disk capacity as possible to hold snapshots as long as you can.  And then you advertise to your users that a retention policy is X, but you exceed it on a regular basis. But if you're in a different legal climate, you may have reasons you want to trash data promptly (to avoid litigation discovery, etc.), or perhaps you have an SLA or other reasons that purging on a schedule is required.
+* at a certain point, this becomes a money question. What is the true business value of your data? The amount of your spend on your backup solution should have some proportionality to the data business value. In my case, the business value is low, so I used off-the-shelf linux tools, glued together scripts, and out-of-warranty gear that already had been fully depreciated and would have otherwise been left powered off. Not everybody is lucky enough to have a decommissioned multi-hundred TB SAN to play with.
+
+So any rate, how I did it, with one example out of the five environments I'm backing up.
+
+1) making a layer 1 connection between backupberg and environment to backup.
+
+In my case, we had a data-center-wide 100G backplane, and backupberg sits on a 10G fiber connection. The target environment has multiple 10G ingress points, but we chose to architect in a way that we would use a single host, also on 10G.
+
+2) actually authenticate and pull files
+
+To actually authenticate, I simply generated a keypair, and then used rsync to pull the relevant data, mostly home directories.
+
+How you pull files is highly environment specific. Even my five environments are not fully consistent, so I had to customize for each environment.
+
+3) log your progress
+
+I made scripts that navigate the target environment, build a local representation of the files to iterate through, and then iterate through those while logging success / failure / transfer rate.
+
+
+4) tune based on logging
+
+Your initial rsync is going to drag on, slowly, and took weeks for me. My fine-tuned logging allowed me to spot which portions of the backup took longer than otheres.
+
+5) consider whether you can NOT backup some data
+
+With my careful logging, I could spot that an enormous portion of my backup time was devoted to rsyncing data that I knew had not changed in years and was unlikely to change in the future. This means that pulling it once is just as good as pulling it everyday.
+
+I ultimately built a second mechanism, ON the target environment to scan through the filesystem, and build a last-touched list for user home directories. I determined that one-third of the users had not logged in during the past six months. I decided I can skip those directories entirely while running bakcups against that environment, and I log why I pass them over. My 'graylist' rebuilds itself once-a-week and takes about 10 hours to navigate the filesystem. That is time well spent, and saves more than 10 hours across a week of daily backups.

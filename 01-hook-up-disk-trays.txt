@@ -1,0 +1,13 @@
+In my case, our Xytratex / Seagate SAS drive boxes have multiple SAS interfaces.
+
+I chose to cross-wire each drive box to separate controllers.
+
+The drive boxes themselves just report raw SAS access to each individual drive, allowing us to directly talk to the drives. This also means we're responsible for RAID and handling failures ourselves rather than having hardware RAID assist us.
+
+I had 3x 4-port SAS cards in my controller system, 2x drive boxes with a total of 8 SAS ports to choose from.
+
+I chose to wire each drive box with four SAS cables to the controllers, with no single drive box having more than two ports plugged into a single card. My idea was that I'd still have a SAS path if a single card or controller failed.
+
+Between the drive boxes themselves itself being pathed redundantly and my own cabling, this creates a minor problem, which is that any given drive can be discovered over multiple paths.
+
+I'll explain how to solve the problems this creates on the next document.

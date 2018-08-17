@@ -1,0 +1,337 @@
+Multipath is your friend.
+
+Also, SAN drives commonly have a 520 byte formatting, and that makes them useful to many raid controller cards, but useless to linux, which expects 512 byte formatting. We'll solve that later in the document.
+
+First, a bit more about what I mean about multipath.
+
+[root@backupberg1 ~]# dmesg | grep sda
+[   19.128631] sd 1:0:28:0: [sdag] Attached SCSI disk
+[   19.128839] sd 1:0:30:0: [sdai] Attached SCSI disk
+[   19.129107] sd 1:0:33:0: [sdal] Attached SCSI disk
+[   19.129564] sd 1:0:32:0: [sdak] Attached SCSI disk
+[   19.129792] sd 1:0:37:0: [sdap] Attached SCSI disk
+[   19.130370] sd 1:0:29:0: [sdah] Attached SCSI disk
+[   19.130542] sd 1:0:34:0: [sdam] Attached SCSI disk
+[   19.130738] sd 1:0:31:0: [sdaj] Attached SCSI disk
+[   19.130956] sd 1:0:35:0: [sdan] Attached SCSI disk
+[   19.131492] sd 1:0:36:0: [sdao] Attached SCSI disk
+[   19.134150] sd 1:0:38:0: [sdaq] Attached SCSI disk
+[   19.134314] sd 1:0:46:0: [sdax] Attached SCSI disk
+[   19.134710] sd 1:0:47:0: [sday] Attached SCSI disk
+[   19.134845] sd 1:0:39:0: [sdar] Attached SCSI disk
+[   19.135907] sd 1:0:48:0: [sdaz] Attached SCSI disk
+[   19.136168] sd 1:0:43:0: [sdav] Attached SCSI disk
+[   19.136300] sd 1:0:40:0: [sdas] Attached SCSI disk
+[   19.136411] sd 1:0:44:0: [sdaw] Attached SCSI disk
+[   19.136532] sd 1:0:41:0: [sdat] Attached SCSI disk
+[   19.136584] sd 1:0:42:0: [sdau] Attached SCSI disk
+
+[root@backupberg1 ~]# sg_scan -i | grep SEAGATE | wc -l
+564
+
+that's obviously a problem.
+
+We need a way to properly list these drives, because we do no actually have 564 drives. We have a much smaller number; maybe 150? Something is woefully wrong. Trying to use multipath and multipathd to fix that.
+
+trying to get a better count of hard drives
+
+[root@backupberg1 ~]# sg_scan -i | grep -B1 SEAGATE | grep -v SEAGATE | cut -d':' -f1 | grep dev > list_of_hard_drive_device_paths.txt
+[root@backupberg1 ~]# wc -l list_of_hard_drive_device_paths.txt
+564 list_of_hard_drive_device_paths.txt
+[root@backupberg1 ~]# cat list_of_hard_drive_device_paths.txt| while read dev; do echo $dev >> list_of_drive_paths_and_serials; sg_inq $dev | grep serial >> list_of_drive_paths_and_serials; done
+[root@backupberg1 ~]# wc -l list_of_drive_paths_and_serials
+1128 list_of_drive_paths_and_serials
+[root@backupberg1 ~]# grep serial list_of_drive_paths_and_serials | uniq | wc -l
+564
+that's very, very, very unexpected. How could I possibly have 564 drive serial numbers that are different?
+
+the answer is I don't and i need to run sort before I run uniq.
+
+actually getting a better count of drives and associated device names
+One problem is that we really do have a fair number of drives, but a further complication is they should up at least three times, sometimes more.
+
+
+[root@backupberg2 ~]# sg_scan -i | grep -B1 SEAGATE | grep -v SEAGATE | cut -d':' -f1 | grep dev > list_of_hard_drive_device_paths.txt
+[root@backupberg2 ~]# wc -l list_of_hard_drive_device_paths.txt
+564 list_of_hard_drive_device_paths.txt
+
+That gets us the paths, but most drives show up repeatedly. Need to prune that list to get a single path per disk.
+
+
+[root@backupberg2 ~]# cat list_of_hard_drive_device_paths.txt | while read dev ; do echo $dev >> list_of_hard_drive_device_paths_and_serials; sg_inq $dev | grep serial >> list_of_hard_drive_device_paths_and_serials; done
+[root@backupberg2 ~]# head list_of_hard_drive_device_paths_and_serials
+/dev/sg8
+ Unit serial number: Z2948BCS00009303YUYT
+/dev/sg9
+ Unit serial number: Z294886X0000C2518LAC
+/dev/sg10
+ Unit serial number: Z294A85X00009304HGZJ
+/dev/sg11
+ Unit serial number: Z2948CE700009251S5B2
+/dev/sg12
+ Unit serial number: Z2948BKK00009301VGCL
+
+We're getting warmer. We have a unique identifier for a disk, but we have too many associated paths. For an example:
+
+
+[root@backupberg2 ~]# grep -B1 Z2948BCS00009303YUYT list_of_hard_drive_device_paths_and_serials
+/dev/sg8
+ Unit serial number: Z2948BCS00009303YUYT
+--
+/dev/sg160
+ Unit serial number: Z2948BCS00009303YUYT
+--
+/dev/sg294
+ Unit serial number: Z2948BCS00009303YUYT
+--
+/dev/sg429
+ Unit serial number: Z2948BCS00009303YUYT
+
+that disk shows up four times. Need to get proper count of disks.
+
+
+[root@backupberg2 ~]# grep serial list_of_hard_drive_device_paths_and_serials | sort | uniq | wc -l
+141
+[root@backupberg2 ~]# grep serial list_of_hard_drive_device_paths_and_serials | sort | uniq > unique_serials
+
+that's the right answer. We have 141 disks on backupberg2. Need to map them back to unique paths.
+
+
+[root@backupberg2 ~]# cut -d: -f2 unique_serials | head -2 | while read serial ; do echo $serial ; grep -B1 $serial list_of_hard_drive_device_paths_and_serials | head -1; done
+Z1Y44DR10000R632Z329
+/dev/sg62
+Z29432N100009312SL64
+/dev/sg93
+
+That's what we need. A mapping of paths to get to the unique drives. And we one need one path per drive. And we want to just get the paths anyway...
+
+
+[root@backupberg2 ~]# cut -d: -f2 unique_serials | while read serial ; do echo $serial ; grep -B1 $serial list_of_hard_drive_device_paths_and_serials | head -1 >> just_paths_to_unique_serial; done
+[root@backupberg2 ~]# wc -l just_paths_to_unique_serial
+141 just_paths_to_unique_serial
+[root@backupberg2 ~]# head just_paths_to_unique_serial
+/dev/sg62
+/dev/sg93
+/dev/sg82
+/dev/sg17
+/dev/sg9
+/dev/sg15
+/dev/sg79
+/dev/sg21
+/dev/sg86
+/dev/sg83
+
+Now we can use that to make a bulk format.
+
+actually bulk formatting a bunch of hard drives
+
+[root@backupberg2 formatting]# for ((i=10; i < 150 ; i=$i+10 )) ; do head -$i ~/just_paths_to_unique_serial | tail -10 >> batch_$i; echo $i; done
+10
+20
+30
+40
+50
+60
+70
+80
+90
+100
+110
+120
+130
+140
+[root@backupberg2 formatting]# wc -l ~/just_paths_to_unique_serial
+141 /root/just_paths_to_unique_serial
+[root@backupberg2 formatting]# tail -1 ~/just_paths_to_unique_serial
+/dev/sg46
+[root@backupberg2 formatting]# tail -1 ~/just_paths_to_unique_serial > last_drive_to_format
+
+actually doing one batch of ten from a loop
+first, I started a screen session:
+
+[root@backupberg2 formatting]# cat batch_10 | while read dev ; do echo $dev ; sg_format --format --size=512 $dev & done
+/dev/sg62
+/dev/sg93
+/dev/sg82
+/dev/sg17
+/dev/sg9
+/dev/sg15
+/dev/sg79
+/dev/sg21
+/dev/sg86
+/dev/sg83
+[root@backupberg2 formatting]#     SEAGATE   DKS2D-H3R0SS      6FB0   peripheral_type: disk [0x0]
+    SEAGATE   DKS2D-H3R0SS      6FB0   peripheral_type: disk [0x0]
+    SEAGATE   DKS2D-H3R0SS      6FB0   peripheral_type: disk [0x0]
+    SEAGATE   DKS2D-H3R0SS      6FB0   peripheral_type: disk [0x0]
+    SEAGATE   DKS2D-H3R0SS      6FB0   peripheral_type: disk [0x0]
+    SEAGATE   DKS2E-H3R0SS      7FA6   peripheral_type: disk [0x0]
+    SEAGATE   DKS2D-H3R0SS      6FB0   peripheral_type: disk [0x0]
+    SEAGATE   DKS2D-H3R0SS      6FB0   peripheral_type: disk [0x0]
+    SEAGATE   DKS2D-H3R0SS      6FB0   peripheral_type: disk [0x0]
+    SEAGATE   DKS2D-H3R0SS      6FB0   peripheral_type: disk [0x0]
+Mode Sense (block descriptor) data, prior to changes:
+Mode Sense (block descriptor) data, prior to changes:
+Mode Sense (block descriptor) data, prior to changes:
+Mode Sense (block descriptor) data, prior to changes:
+Mode Sense (block descriptor) data, prior to changes:
+Mode Sense (block descriptor) data, prior to changes:
+Mode Sense (block descriptor) data, prior to changes:
+Mode Sense (block descriptor) data, prior to changes:
+Mode Sense (block descriptor) data, prior to changes:
+Mode Sense (block descriptor) data, prior to changes:
+  <<< longlba flag set (64 bit lba) >>>
+  Number of blocks=5736538480 [0x155eca170]
+  Block size=520 [0x208]
+Mode Sense (block descriptor) data, prior to changes:
+Mode Sense (block descriptor) data, prior to changes:
+  <<< longlba flag set (64 bit lba) >>>
+  Number of blocks=5736538480 [0x155eca170]
+  Block size=520 [0x208]
+Mode Sense (block descriptor) data, prior to changes:
+  <<< longlba flag set (64 bit lba) >>>
+  Number of blocks=5736538480 [0x155eca170]
+Mode Sense (block descriptor) data, prior to changes:
+  Block size=520 [0x208]
+Mode Sense (block descriptor) data, prior to changes:
+  <<< longlba flag set (64 bit lba) >>>
+  <<< longlba flag set (64 bit lba) >>>
+Mode Sense (block descriptor) data, prior to changes:
+  Number of blocks=5736538480 [0x155eca170]
+  Number of blocks=5736538480 [0x155eca170]
+  <<< longlba flag set (64 bit lba) >>>
+  Block size=520 [0x208]
+  Block size=520 [0x208]
+  Number of blocks=5736538480 [0x155eca170]
+Mode Sense (block descriptor) data, prior to changes:
+  <<< longlba flag set (64 bit lba) >>>
+  Number of blocks=5736538480 [0x155eca170]
+  Block size=520 [0x208]
+Mode Sense (block descriptor) data, prior to changes:
+  Block size=520 [0x208]
+  <<< longlba flag set (64 bit lba) >>>
+  Number of blocks=5736538480 [0x155eca170]
+  Block size=520 [0x208]
+Mode Sense (block descriptor) data, prior to changes:
+  <<< longlba flag set (64 bit lba) >>>
+  Number of blocks=5736538480 [0x155eca170]
+Mode Sense (block descriptor) data, prior to changes:
+  Block size=520 [0x208]
+  <<< longlba flag set (64 bit lba) >>>
+  Number of blocks=5736538480 [0x155eca170]
+  Block size=520 [0x208]
+
+A FORMAT will commence in 10 seconds
+    ALL data on /dev/sg15 will be DESTROYED
+        Press control-C to abort
+
+A FORMAT will commence in 10 seconds
+    ALL data on /dev/sg82 will be DESTROYED
+        Press control-C to abort
+
+A FORMAT will commence in 10 seconds
+    ALL data on /dev/sg21 will be DESTROYED
+        Press control-C to abort
+
+A FORMAT will commence in 10 seconds
+    ALL data on /dev/sg17 will be DESTROYED
+        Press control-C to abort
+
+A FORMAT will commence in 10 seconds
+    ALL data on /dev/sg79 will be DESTROYED
+        Press control-C to abort
+
+A FORMAT will commence in 10 seconds
+    ALL data on /dev/sg83 will be DESTROYED
+        Press control-C to abort
+
+A FORMAT will commence in 10 seconds
+    ALL data on /dev/sg93 will be DESTROYED
+        Press control-C to abort
+
+A FORMAT will commence in 10 seconds
+    ALL data on /dev/sg86 will be DESTROYED
+        Press control-C to abort
+
+A FORMAT will commence in 10 seconds
+    ALL data on /dev/sg9 will be DESTROYED
+        Press control-C to abort
+
+A FORMAT will commence in 10 seconds
+    ALL data on /dev/sg62 will be DESTROYED
+        Press control-C to abort
+[root@backupberg2 formatting]# ps aux | grep format
+root     13216  0.0  0.0   8664   712 pts/1    S    14:18   0:00 sg_format --format --size=512 /dev/sg62
+root     13217  0.0  0.0   8664   712 pts/1    S    14:18   0:00 sg_format --format --size=512 /dev/sg93
+root     13218  0.0  0.0   8664   712 pts/1    S    14:18   0:00 sg_format --format --size=512 /dev/sg82
+root     13219  0.0  0.0   8664   712 pts/1    S    14:18   0:00 sg_format --format --size=512 /dev/sg17
+root     13220  0.0  0.0   8664   712 pts/1    S    14:18   0:00 sg_format --format --size=512 /dev/sg9
+root     13221  0.0  0.0   8664   712 pts/1    S    14:18   0:00 sg_format --format --size=512 /dev/sg15
+root     13222  0.0  0.0   8664   712 pts/1    S    14:18   0:00 sg_format --format --size=512 /dev/sg79
+root     13223  0.0  0.0   8664   712 pts/1    S    14:18   0:00 sg_format --format --size=512 /dev/sg21
+root     13224  0.0  0.0   8664   712 pts/1    S    14:18   0:00 sg_format --format --size=512 /dev/sg86
+root     13225  0.0  0.0   8664   712 pts/1    S    14:18   0:00 sg_format --format --size=512 /dev/sg83
+
+After the formats, you should reboot to force the controllers to reread the drives, and for multipath to discover everything appropriately.
+
+actually listing the properly registered multipath devices
+
+[root@backupberg1 ~]# multipath -ll | head
+mpathcu (35000c500558ca71f) dm-107 SEAGATE ,DKS2D-H3R0SS
+size=2.7T features='0' hwhandler='0' wp=rw
+|-+- policy='service-time 0' prio=1 status=active
+| `- 1:0:168:0 sdfg 130:32  active ready running
+|-+- policy='service-time 0' prio=1 status=enabled
+| `- 8:0:75:0  sdjo 65:288  active ready running
+`-+- policy='service-time 0' prio=1 status=enabled
+  `- 9:0:107:0 sdqa 131:416 active ready running
+mpathdz (35000c500564f28c3) dm-85 SEAGATE ,DKS2D-H3R0SS
+size=2.7T features='0' hwhandler='0' wp=rw
+[root@backupberg1 ~]# multipath -ll | grep mpath | wc -l
+140
+[root@backupberg1 ~]# multipath -ll | grep mpath | head
+mpathcu (35000c500558ca71f) dm-107 SEAGATE ,DKS2D-H3R0SS
+mpathdz (35000c500564f28c3) dm-85 SEAGATE ,DKS2D-H3R0SS
+mpathbp (35000c50055b98ddf) dm-67 SEAGATE ,DKS2D-H3R0SS
+mpathak (35000c500558d24db) dm-49 SEAGATE ,DKS2D-H3R0SS
+mpathr (35000c50055b98293) dm-8 SEAGATE ,DKS2D-H3R0SS
+mpathch (35000c500558d10cb) dm-139 SEAGATE ,DKS2D-H3R0SS
+mpathdm (35000c50055992b33) dm-81 SEAGATE ,DKS2D-H3R0SS
+mpathbc (35000c50055b9911f) dm-41 SEAGATE ,DKS2D-H3R0SS
+mpathe (35000c50055992b9b) dm-17 SEAGATE ,DKS2D-H3R0SS
+mpathee (35000c5005590b597) dm-98 SEAGATE ,DKS2D-H3R0SS
+
+getting a list of mpath paths
+on backupberg1, we have 140x 2.7TB (3TB) drives.
+
+[root@backupberg1 ~]# multipath -ll | grep mpath | wc -l
+140
+[root@backupberg1 ~]# multipath -ll | grep 2.7T | wc -l
+140
+[root@backupberg1 ~]# multipath -ll | grep mpath | cut -d' ' -f1 > just_mpath_paths
+[root@backupberg1 making_raid6s]# cat ~/just_mpath_paths | while read dev ; do echo /dev/mapper/$dev >> better_mpath_paths; done
+[root@backupberg1 making_raid6s]# wc -l better_mpath_paths
+140 better_mpath_paths
+[root@backupberg1 making_raid6s]# head -5 better_mpath_paths
+/dev/mapper/mpathcu
+/dev/mapper/mpathdz
+/dev/mapper/mpathbp
+/dev/mapper/mpathak
+/dev/mapper/mpathr
+
+Plan is to split this into 11x 12-disk raid6s, with a raid0 joining them. That uses 132 drives, and plan is to hold back 8 disks for global hot spares.
+
+##
+
+tldr;
+
+the reason you want multipath is because the same drive shows up multiple times as raw device, but only once as multipath.
+
+[root@backupberg1 ~]# sginfo -a /dev/mapper/mpathel | grep -i serial
+Serial Number 'Z1Y194ET00009418KXGE'
+[root@backupberg1 ~]# sginfo -a /dev/sdki | grep -i serial
+Serial Number 'Z1Y194ET00009418KXGE'
+[root@backupberg1 ~]# sginfo -a /dev/sdo | grep -i serial
+Serial Number 'Z1Y194ET00009418KXGE'
+[root@backupberg1 ~]# sginfo -a /dev/sdna | grep -i serial
+Serial Number 'Z1Y194ET00009418KXGE'

@@ -1,0 +1,89 @@
+enabling snapshots on ZFS
+this one is easy-peasy
+
+
+[root@backupberg2 ~]# DATE=`date +%Y%m%d-%H%M-%s`
+[root@backupberg2 ~]# echo $DATE
+20170907-1655-1504817734
+[root@backupberg2 ~]# zfs snapshot pool60/backups@$DATE
+[root@backupberg2 ~]# zfs list -t snapshot
+NAME                                      USED  AVAIL  REFER  MOUNTPOINT
+pool60/backups@20170907-1647-1504817262      0      -   166T  -
+[root@backupberg2 ~]# zfs list -r -t snapshot -o name,creation pool60/backups
+NAME                                     CREATION
+pool60/backups@20170907-1647-1504817262  Thu Sep  7 16:52 2017
+
+automatic daily snapshots on ZFS
+This runs automatically out of cron.
+
+
+22 2 * * * /usr/local/bin/snapshot_milgram_volume.sh
+[root@backupberg2 ~]# cat /usr/local/bin/snapshot_milgram_volume.sh
+#!/bin/bash
+
+# David Backeberg
+# snapshot the ZFS, probably daily
+
+declare DATE=`date +%Y%m%d-%H%M-%s`
+
+#/usr/sbin/zfs snapshot pool60/backups@$DATE
+/usr/sbin/zfs snapshot pool60/gpfs@$DATE
+/usr/sbin/zfs snapshot pool60/nexsan@$DATE
+
+/usr/sbin/zfs list -r -t snapshot -o name,creation pool60/backups
+/usr/sbin/zfs list -r -t snapshot -o name,creation pool60/gpfs
+/usr/sbin/zfs list -r -t snapshot -o name,creation pool60/nexsan
+
+/usr/sbin/zfs list -t snapshot
+
+list existing snapshots
+
+[root@backupberg2 ~]# /usr/sbin/zfs list -r -t snapshot -o name,creation pool60/gpfs
+NAME                                  CREATION
+pool60/gpfs@20170928-1233-1506616424  Thu Sep 28 12:34 2017
+pool60/gpfs@20171104-0222-1509776521  Sat Nov  4  2:22 2017
+pool60/gpfs@20171105-0222-1509866521  Sun Nov  5  2:22 2017
+pool60/gpfs@20171106-0222-1509952921  Mon Nov  6  2:22 2017
+pool60/gpfs@20171107-0222-1510039321  Tue Nov  7  2:22 2017
+pool60/gpfs@20171108-0222-1510125721  Wed Nov  8  2:22 2017
+[root@backupberg2 ~]# /usr/sbin/zfs list -r -t snapshot -o name,creation pool60/nexsan
+NAME                                    CREATION
+pool60/nexsan@20170928-1233-1506616424  Thu Sep 28 12:34 2017
+pool60/nexsan@20171104-0222-1509776521  Sat Nov  4  2:22 2017
+pool60/nexsan@20171105-0222-1509866521  Sun Nov  5  2:22 2017
+pool60/nexsan@20171106-0222-1509952921  Mon Nov  6  2:22 2017
+pool60/nexsan@20171107-0222-1510039321  Tue Nov  7  2:22 2017
+pool60/nexsan@20171108-0222-1510125721  Wed Nov  8  2:22 2017
+
+delete specific snapshots
+
+[root@backupberg2 holmes]# zfs destroy pool60/backups@20170928-1233-1506616424
+
+You need to give the entire path to delete a snapshot. Warning. This is NOT instantaneous. If the snapshot is fairly large, it could take hours for the filesystem to reclaim the filesystem usage, and it will do so in the background, in a way that will raise the cpu-load, but I don't really know how to track it. You will see the snapshot stop existing in the list, but you will not immediately see the filesystem as free. If you monitor it, and keep coming back after "a while" you will gradually see free disk increase.
+
+aggregate snapshot usage
+
+[root@backupberg2 ~]# zfs list -o space
+NAME              AVAIL   USED  USEDSNAP  USEDDS  USEDREFRESERV  USEDCHILD
+pool60             105T   181T         0   38.5K              0       181T
+pool60/backups     105T   105T         0    105T              0          0
+pool60/gpfs        105T  6.72T      126M   6.72T              0          0
+pool60/nexsan      105T  69.7T     1.84T   67.9T              0          0
+pool60/snapshots   105T  37.3K         0   37.3K              0          0
+
+specific snapshot usage
+
+[root@backupberg2 ~]# zfs list -t snapshot
+NAME                                     USED  AVAIL  REFER  MOUNTPOINT
+pool60/gpfs@20170928-1233-1506616424    10.1M      -   710M  -
+pool60/gpfs@20171104-0222-1509776521    22.9M      -  6.61T  -
+pool60/gpfs@20171105-0222-1509866521    24.8M      -  6.64T  -
+pool60/gpfs@20171106-0222-1509952921    22.2M      -  6.66T  -
+pool60/gpfs@20171107-0222-1510039321    22.7M      -  6.67T  -
+pool60/gpfs@20171108-0222-1510125721    22.6M      -  6.69T  -
+pool60/nexsan@20170928-1233-1506616424  1.40T      -  24.9T  -
+pool60/nexsan@20171104-0222-1509776521   319G      -  64.4T  -
+pool60/nexsan@20171105-0222-1509866521   472K      -  66.4T  -
+pool60/nexsan@20171106-0222-1509952921      0      -  68.0T  -
+pool60/nexsan@20171107-0222-1510039321      0      -  68.0T  -
+pool60/nexsan@20171108-0222-1510125721      0      -  68.0T  -

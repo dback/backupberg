@@ -8,6 +8,7 @@ IBM / Lenovo also sells a very similar looking enclosure as part of their curren
 We stopped paying warranty coverage on the actual Hitachi technology. (which converted SAS to Fiber channel RAID LUNs, and converted Fiber Channel raw commands up to easy-to-use NFS / CIFS over 10G ethernet).
 But the actual drive carriages and cabinets speak raw SAS.
 Can we just hook those SAS trays up to Linux and talk to them, and roll-our-own backup solution?
-Probably.
+
+Yes.
 
 This repo is about how we did it.

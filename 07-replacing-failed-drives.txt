@@ -26,7 +26,7 @@ Unit serial number: Z294886X0000C2518LAC
 
 there's a serial. Easy peasy.
 
-In my case, my physical disk trays are labeled with serial numbers, which makes it not so bad to just shelf-read the disk trays until I find the serial number in question. It woudl be nice if I could light up the tray with an LED, but I'm not aware of a way to do that. Please write to me if you know how.
+In my case, my physical disk trays are labeled with serial numbers, which makes it not so bad to just shelf-read the disk trays until I find the serial number in question. It would be nice if I could light up the tray with an LED, but I'm not aware of a way to do that. Please write to me if you know how.
 
 Basically, if ZFS sees damage, it's likely that SMART sees damage too, and also likely the kernel has seen some errors as well...
 

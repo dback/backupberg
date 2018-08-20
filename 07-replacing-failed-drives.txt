@@ -11,7 +11,7 @@ scan: scrub in progress since Mon Aug 13 12:06:22 2018
 
 In this particular case, I was doing a ZFS scrub when the system detected read errors on disk.
 
-In this particular case, two disks failed in the same time interval, but there were on different raidz2 volumes (RAID 60) and as such there was still sufficient parity data in the RAID to continue business as usual.
+In this particular case, two disks failed in the same time interval, but they were were on different raidz2 volumes (RAID 60) and as such there was still sufficient parity data in the RAID to continue business as usual.
 
 raidz2-2 DEGRADED 0 0 0
 mpathb FAULTED 37 0 0 too many errors (repairing)
@@ -48,7 +48,7 @@ size=2.7T features='0' hwhandler='0' wp=rw
 | `- 8:0:202:0 sdlz 69:272  active ready running
 `-+- policy='service-time 0' prio=1 status=enabled
 
-note that mpathcf is one of the device paths associated with mpathbr, which we already suspected was bad because ZFS said so.
+note that /dev/sdcf is one of the device paths associated with mpathbr, which we already suspected was bad because ZFS said so.
 
 Let's ask smart what it thinks...
 
